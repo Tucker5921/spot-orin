@@ -283,8 +283,8 @@ def register_with_robot(options):
         sys.exit(1)
 
 def main(argv):
-    # FIXED_ROBOT_IP = "10.0.0.3"
-    FIXED_ROBOT_IP = "192.168.80.3"
+    FIXED_ROBOT_IP = "10.0.0.3"
+    # FIXED_ROBOT_IP = "192.168.80.3"
     DEFAULT_MODEL = "best.engine"
     DEFAULT_LABELS = "labels.txt"
     SERVICE_NAME = "fetch-server"

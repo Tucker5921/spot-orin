@@ -65,8 +65,8 @@ class SpotFetchROS2Node(Node):
         sdk.register_service_client(NetworkComputeBridgeClient)
 
         # TODO: 請替換為你的機器人 IP 與帳密
-        # self.robot = sdk.create_robot("10.0.0.3")
-        self.robot = sdk.create_robot("192.168.80.3")
+        self.robot = sdk.create_robot("10.0.0.3")
+        # self.robot = sdk.create_robot("192.168.80.3")
         self.robot.authenticate("admin", "eqyqp33u8i74")
         self.robot.time_sync.wait_for_sync()
         self.robot_state_client = self.robot.ensure_client(RobotStateClient.default_service_name)
@@ -155,7 +155,7 @@ class SpotFetchROS2Node(Node):
                 s = 1
         match s:
             case 1:
-                self.get_logger().info('正在透過 NCS 搜尋物體...')
+                # self.get_logger().info('正在透過 NCS 搜尋物體...')
                 
                 # 1. 掃描所有看到的目標
                 self.detection_obj_and_img(ImageSources)
@@ -175,24 +175,29 @@ class SpotFetchROS2Node(Node):
                 if nearest_target is None or nearest_target['pose_in_body'] is None or nearest_target['distance'] is None:
                     self.get_logger().info("找不到有效最近目標，恢復巡邏模式...")
                     return
+                
+                # 6. 如果有有效的最近目標，進入接近模式
                 if nearest_target["status"] == STATUS_DETECTED:
                     nearest_target["status"] = STATUS_APPROACHING
                 
-                # 5.2 印出 target_list 狀態供除錯用
+                # 取得最近目標在 body frame 的位置，計算角度
+                tx = nearest_target['pose_in_body'].pose.position.x
+                ty = nearest_target['pose_in_body'].pose.position.y
+                angle_to_target = math.atan2(ty, tx)
+                
+                # 印出 target_list 狀態供除錯用
                 if len(self.target_list) == 0:
                     return
                 self.get_logger().info("=== target_list ===")
                 for target in self.target_list:
                     self.get_logger().info(f"{target['id']}, {target['status']}")
                 
-                # 6. 如果有有效的最近目標，進入接近模式
-                self.get_logger().info(
-                    f"目前最近目標: {nearest_target['id']}，狀態: {nearest_target['status']}，距離: {nearest_target['distance']:.2f}m"
-                )
-                # 取得最近目標在 body frame 的位置，計算角度
-                tx = nearest_target['pose_in_body'].pose.position.x
-                ty = nearest_target['pose_in_body'].pose.position.y
-                angle_to_target = math.atan2(ty, tx)
+                
+                # self.get_logger().info(
+                #     f"目前最近目標: {nearest_target['id']}，狀態: {nearest_target['status']}，距離: {nearest_target['distance']:.2f}m"
+                # )
+               
+
                 #-------------------------------------------------------------------------------------------
                 #局部規劃移動邏輯：
                 # 6.1 如果角度太大 (> 70度)，先原地轉向對齊
@@ -208,11 +213,11 @@ class SpotFetchROS2Node(Node):
                     )
                     # 6.21 介於 70-30度：減速斜向接近
                     if abs(angle_to_target) > 0.5:
-                        self.move_msg.linear.x = 0.3
-                        self.move_msg.angular.z = angle_to_target * 0.6
-                    # 6.22 角度小於 30度：直接減速往前接近    
-                    else:
                         self.move_msg.linear.x = 0.4
+                        self.move_msg.angular.z = angle_to_target * 0.6
+                    # 6.22 角度小於 30度：直接往前接近    
+                    else:
+                        self.move_msg.linear.x = 0.5
                         self.move_msg.angular.z = angle_to_target * 0.5
                     return
                 # 6.3 若最近目標太近了，往後退一點並微調角度
@@ -252,13 +257,13 @@ class SpotFetchROS2Node(Node):
                     target['fail_count'] += 1
                     self.get_logger().warn(
                         f"無法辨識目標 {target['id']} "
-                        f"(第 {target['fail_count']}/5 次嘗試)"
+                        f"(第 {target['fail_count']}/3 次嘗試)"
                     )
 
-                    if target['fail_count'] >= 5:
+                    if target['fail_count'] >= 3:
                         if target["status"]:
                             self.get_logger().error(
-                                f"目標 {target['id']} 連續 5 次辨識失敗，標記為 UNHANDLED"
+                                f"目標 {target['id']} 連續 3 次辨識失敗，標記為 UNHANDLED"
                             )
                             self.recovery_arm()
                             target['status'] = STATUS_UNHANDLED
@@ -267,24 +272,52 @@ class SpotFetchROS2Node(Node):
                 target['fail_count'] = 0
        
                 #------------------------------------------------------------------------------------------
-                self.get_logger().info("已抵達目標範圍，開始夾取程序...")
+                # self.get_logger().info("已抵達目標範圍，開始夾取程序...")
 
-                # 計算像素中心
+                # # 計算像素中心
                 center_px_x, center_px_y = self.find_center_px(target_obj.image_properties.coordinates)
 
-                # 構造 SDK 夾取指令
-                pick_vec = geometry_pb2.Vec2(x=center_px_x, y=center_px_y)
-                grasp = manipulation_api_pb2.PickObjectInImage(
-                    pixel_xy=pick_vec,
-                    transforms_snapshot_for_camera=image_full.shot.transforms_snapshot,
-                    frame_name_image_sensor=image_full.shot.frame_name_image_sensor,
-                    camera_model=image_full.source.pinhole
+                # # 構造 SDK 夾取指令
+                # pick_vec = geometry_pb2.Vec2(x=center_px_x, y=center_px_y)
+                # grasp = manipulation_api_pb2.PickObjectInImage(
+                #     pixel_xy=pick_vec,
+                #     transforms_snapshot_for_camera=image_full.shot.transforms_snapshot,
+                #     frame_name_image_sensor=image_full.shot.frame_name_image_sensor,
+                #     camera_model=image_full.source.pinhole
+                # )
+                # grasp.grasp_params.grasp_palm_to_fingertip = 0.6
+                # grasp.grasp_params.grasp_params_frame_name = frame_helpers.VISION_FRAME_NAME
+
+                # manip_request = manipulation_api_pb2.ManipulationApiRequest(
+                #     pick_object_in_image=grasp
+                # )
+
+                # # --- 將 SDK 夾取指令轉換並傳送給 ROS 2 ---
+                # self.send_ros2_manipulation_goal(manip_request)
+
+                # target["status"] = STATUS_GRASPING
+                self.get_logger().info("已抵達目標範圍，開始夾取程序...")
+
+                # 取得目標在 vision frame 下的 3D 座標
+                vision_tform_obj = target["vision_tform_obj"]
+
+                # 構造 SDK 夾取指令：改用 PickObject
+                grasp = manipulation_api_pb2.PickObject(
+                    frame_name=frame_helpers.VISION_FRAME_NAME,
+                    object_rt_frame=geometry_pb2.Vec3(
+                        x=float(vision_tform_obj.x),
+                        y=float(vision_tform_obj.y),
+                        z=float(vision_tform_obj.z)
+                    )
                 )
+
+                # grasp 參數
                 grasp.grasp_params.grasp_palm_to_fingertip = 0.6
                 grasp.grasp_params.grasp_params_frame_name = frame_helpers.VISION_FRAME_NAME
 
+                # 建立 Manipulation Request
                 manip_request = manipulation_api_pb2.ManipulationApiRequest(
-                    pick_object_in_image=grasp
+                    pick_object=grasp
                 )
 
                 # --- 將 SDK 夾取指令轉換並傳送給 ROS 2 ---
@@ -370,17 +403,18 @@ class SpotFetchROS2Node(Node):
         valid_states = [2, 3, 6, 10, 12]
         state_code = feedback_msg.feedback.feedback.current_state.value
         now = time.time() # 或者使用 self.get_clock().now()
-        # self.get_logger().info(f"==> 夾取進度回饋: 狀態碼 {state_code}")
+        
         # --- 狀態卡死檢查邏輯 ---
         if state_code != self.last_feedback_state:
             # 狀態改變了，重置計時器
             self.last_feedback_state = state_code
             self.state_start_time = now
+            self.get_logger().info(f"==> 夾取狀態改變回饋: 狀態碼 {state_code}")
         else:
             # 狀態沒變，檢查是否超時
             if self.state_start_time is not None:
                 elapsed = now - self.state_start_time
-                if elapsed > self.state_timeout_duration and state_code != 3:
+                if (elapsed > self.state_timeout_duration and state_code != 3) or (elapsed > self.state_timeout_duration*3 and state_code == 3):
                     self.get_logger().error(f"❌ 夾取狀態卡在 {state_code} 超過 {self.state_timeout_duration} 秒，判定失敗。")
                     self.state_start_time = now
                     self.cancel_current_manipulation()
@@ -465,6 +499,7 @@ class SpotFetchROS2Node(Node):
             if open_percent <= 0.9:
                 self.retry_pose()
                 target["status"] = STATUS_RETRY
+                target["retry_count"] += 1
                 self.current_target_id = None
                 return
             try:
@@ -512,6 +547,7 @@ class SpotFetchROS2Node(Node):
         else:
             self.retry_pose()
             target["status"] = STATUS_RETRY
+            target["retry_count"] += 1
             self.current_target_id = None
     
     def retry_pose(self):
@@ -710,53 +746,6 @@ class SpotFetchROS2Node(Node):
 
         updated_targets = []
 
-        # for detected in detected_objects:
-        #     new_tform = detected["vision_tform_obj"]
-
-        #     best_match_index = None
-        #     best_match_distance = math.inf
-
-        #     for i, target in enumerate(self.target_list):
-        #         # 設定不更新的狀態集合{grasped, unhandled}
-        #         if target.get("status") in [STATUS_GRASPED, STATUS_UNHANDLED]:
-        #             continue
-        #         # 取得 target_list中每個目標的vision_tform_obj
-        #         old_tform = target["vision_tform_obj"]
-        #         # 計算新舊目標的距離(3D距離)
-        #         dx = new_tform.x - old_tform.x
-        #         dy = new_tform.y - old_tform.y
-        #         dz = new_tform.z - old_tform.z
-        #         distance = math.sqrt(dx * dx + dy * dy + dz * dz)
-        #         # 如果小於重複門檻(duplicate_threshold)和目前最佳距離(best_match_distance)，則更新數值
-        #         if distance <= self.duplicate_threshold and distance < best_match_distance:
-        #             best_match_distance = distance
-        #             best_match_index = i
-        #     # 匹配到的話就更新目標資料(obj, vision_tform_obj)不調整status
-        #     if best_match_index is not None:
-        #         self.target_list[best_match_index]["obj"] = detected["obj"]
-        #         self.target_list[best_match_index]["vision_tform_obj"] = detected["vision_tform_obj"]
-
-        #         updated_targets.append(self.target_list[best_match_index])
-        #     # 無匹配到的話就新增一筆目標資料，並給予新的ID和狀態(detected)
-        #     else:
-        #         target_id = f"target_{self.next_target_id}"
-        #         self.next_target_id += 1
-                
-        #         new_target = {
-        #             "obj": detected["obj"],
-        #             "id": target_id,
-        #             "vision_tform_obj": detected["vision_tform_obj"],
-        #             "status": new_status,
-        #             "last_time": None,
-        #             "pose_in_body": None,
-        #             "distance": None,
-        #             "fail_count": 0,
-        #             "failure_reason": None,
-        #         }
-        #         self.target_list.append(new_target)
-        #         updated_targets.append(new_target)
-
-        # return updated_targets
         # 用來記錄哪些新偵測到的物件已經被「匹配」了
         matched_new_indices = set()
         # 用來記錄 target_list 中哪些索引已經被更新了
@@ -813,6 +802,7 @@ class SpotFetchROS2Node(Node):
                 self.target_list[retry_target_index]["status"] = new_status
                 self.target_list[retry_target_index]["fail_count"] = 0
                 
+                
                 updated_target_indices.add(retry_target_index)
                 updated_targets.append(self.target_list[retry_target_index])
             else:
@@ -829,7 +819,7 @@ class SpotFetchROS2Node(Node):
                     "pose_in_body": None,
                     "distance": None,
                     "fail_count": 0,
-                    "failure_reason": None,
+                    "retry_count": 0,
                 }
                 self.target_list.append(new_target)
                 updated_targets.append(new_target)
