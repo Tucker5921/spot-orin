@@ -30,6 +30,12 @@ kServiceAuthority = "fetch-tutorial-worker.spot.robot"
 
 from bosdyn.client.directory_registration import DirectoryRegistrationClient
 
+import rclpy
+from rclpy.node import Node
+from sensor_msgs.msg import Image
+from cv_bridge import CvBridge
+from vision_msgs.msg import Detection2DArray, Detection2D, ObjectHypothesisWithPose
+
 class YoloTRTModel:
     def __init__(self, model_path, label_path=None):
         print(f"Loading YOLO Model: {model_path}")
@@ -53,6 +59,27 @@ class YoloTRTModel:
             'num_detections': len(boxes)
         }
         return detections
+
+class SpotYoloBridgeNode(Node):
+    def __init__(self):
+        super().__init__('spot_yolo_bridge')
+        # 建立 Publisher
+        self.image_pub = self.create_publisher(Image, 'yolo/debug_image', 10)
+        self.det_pub = self.create_publisher(Detection2DArray, 'yolo/detections', 10)
+        self.bridge = CvBridge()
+
+    def publish_results(self, cv_image, detections, labels):
+        # 1. 發布影像
+        img_msg = self.bridge.cv2_to_imgmsg(cv_image, encoding="bgr8")
+        self.image_pub.publish(img_msg)
+
+        # 2. 發布結構化偵測數據 (供其他 ROS 節點使用)
+        det_array = Detection2DArray()
+        # 這裡可以根據 detections 內容填充 Detection2DArray...
+        self.det_pub.publish(det_array)
+
+# 全域節點變數，方便 thread 調用
+ros_node = None
 
 def process_thread(args, request_queue):
     # Load models
@@ -172,8 +199,19 @@ def process_thread(args, request_queue):
                     cv2.putText(image, f"{label}: {score:.2f}", (int(box[0]), int(box[1]-10)), 
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
 
-            if not args.no_debug:
-                cv2.imwrite('network_compute_server_output.jpg', image)
+            # if not args.no_debug:
+            #     cv2.imwrite('network_compute_server_output.jpg', image)
+            if not args.no_debug and ros_node is not None:
+                # 透過 ROS2 發布
+                # ros_node.publish_results(image, detections, model.category_index)
+                if num_objects > 0:
+                    # 只有在辨識到物品時才透過 ROS2 發布影像與數據
+                    ros_node.publish_results(image, detections, model.category_index)
+                    # print(f"偵測到 {num_objects} 個目標，已發布至 ROS2。") # 可選：Debug 用
+                else:
+                    # 如果沒偵測到東西，可以選擇靜默，或是發布空數據
+                    # 通常為了省頻寬與 RViz 乾淨，我們在這裡什麼都不做
+                    pass
 
             # Put Success Result
             return_queue.put(out_proto)
@@ -245,13 +283,17 @@ def register_with_robot(options):
         sys.exit(1)
 
 def main(argv):
-    FIXED_ROBOT_IP = "10.0.0.3"
-    # FIXED_ROBOT_IP = "192.168.80.3"
+    # FIXED_ROBOT_IP = "10.0.0.3"
+    FIXED_ROBOT_IP = "192.168.80.3"
     DEFAULT_MODEL = "best.engine"
     DEFAULT_LABELS = "labels.txt"
     SERVICE_NAME = "fetch-server"
     PORT = "50051"
 
+    rclpy.init()
+    global ros_node
+    ros_node = SpotYoloBridgeNode()
+    
     parser = argparse.ArgumentParser()
     parser.add_argument('-m', '--model', action='append', nargs=2, 
                         default=[[DEFAULT_MODEL, DEFAULT_LABELS]])
@@ -261,18 +303,16 @@ def main(argv):
     parser.add_argument('hostname', nargs='?', default=FIXED_ROBOT_IP)
     
     options = parser.parse_args(argv)
-
+    
     if not os.path.exists(options.model[0][0]):
         print(f"錯誤: 找不到模型文件 {options.model[0][0]}")
         sys.exit(1)
-
+    
     # 註冊服務
     register_with_robot(options)
 
     request_queue = queue.Queue()
-
-    # 啟動處理線程
-    thread = threading.Thread(target=process_thread, args=([options, request_queue]))
+    thread = threading.Thread(target=process_thread, args=([options, request_queue]), daemon=True)
     thread.start()
 
     # 啟動 gRPC Server
@@ -288,10 +328,13 @@ def main(argv):
     
     try:
         # 恢復原本的 thread.join()，這對 gRPC 服務器比較友善
-        thread.join()
+        # thread.join()
+        rclpy.spin(ros_node)
     except KeyboardInterrupt:
-        print("\n偵測到停止訊號，正在註銷服務...")
+        print("\n偵測到停止訊號")
+    finally:
         try:
+            print("\n正在註銷服務...")
             # 建立臨時清理客戶端
             sdk = bosdyn.client.create_standard_sdk("cleanup")
             robot = sdk.create_robot(options.hostname)
@@ -302,12 +345,17 @@ def main(argv):
             print("成功註銷服務。")
         except Exception as e:
             print(f"註銷失敗: {e}")
+            
+        # 關閉 ROS2
+        ros_node.destroy_node()
+        rclpy.shutdown()
+        server.stop(0)
         
         # 強制退出，避免殘留進程
         os._exit(0) 
 
     return True
-
+    
 if __name__ == '__main__':
     logging.basicConfig()
     if not main(sys.argv[1:]):
