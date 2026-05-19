@@ -82,7 +82,7 @@ class SpotFetchROS2Node(Node):
 
         # --- 5. 固定參數 ---
         self.min_confidence         = 0.5
-        self.duplicate_threshold    = 0.2 # 去重門檻
+        self.duplicate_threshold    = 0.3 # 去重門檻
         self.tf_timeout_threshold   = 10.0
         self.distance_threshold     = 1.5
         
@@ -196,7 +196,8 @@ class SpotFetchROS2Node(Node):
                 # self.get_logger().info(
                 #     f"目前最近目標: {nearest_target['id']}，狀態: {nearest_target['status']}，距離: {nearest_target['distance']:.2f}m"
                 # )
-               
+                if nearest_target["status"] == STATUS_RETRY:
+                    self.get_logger().info(f"重試第{nearest_target['retry_count']}次")                    
 
                 #-------------------------------------------------------------------------------------------
                 #局部規劃移動邏輯：
@@ -759,7 +760,8 @@ class SpotFetchROS2Node(Node):
 
             for i, target in enumerate(self.target_list):
                 # 排除已處理或不應更新的狀態
-                if target.get("status") in [STATUS_GRASPED, STATUS_UNHANDLED]:
+                if target.get("status") in [STATUS_GRASPED]:
+                # if target.get("status") in [STATUS_GRASPED, STATUS_UNHANDLED]:
                     continue
                 
                 old_tform = target["vision_tform_obj"]
@@ -845,7 +847,10 @@ class SpotFetchROS2Node(Node):
             tform = target["vision_tform_obj"]
             pose_in_body = None
             distance = None
-
+            if target["retry_count"] > 3:
+                self.get_logger().info("重試超過三次，放棄")
+                target['status'] = STATUS_UNHANDLED
+                target["retry_count"] = 0
             try:
                 pose_in_vision = PoseStamped()
                 pose_in_vision.header.stamp = self.get_clock().now().to_msg()
