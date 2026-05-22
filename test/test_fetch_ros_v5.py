@@ -278,53 +278,56 @@ class SpotFetchROS2Node(Node):
                 # # 計算像素中心
                 center_px_x, center_px_y = self.find_center_px(target_obj.image_properties.coordinates)
 
-                # # 構造 SDK 夾取指令
-                # pick_vec = geometry_pb2.Vec2(x=center_px_x, y=center_px_y)
-                # grasp = manipulation_api_pb2.PickObjectInImage(
-                #     pixel_xy=pick_vec,
-                #     transforms_snapshot_for_camera=image_full.shot.transforms_snapshot,
-                #     frame_name_image_sensor=image_full.shot.frame_name_image_sensor,
-                #     camera_model=image_full.source.pinhole
-                # )
-                # grasp.grasp_params.grasp_palm_to_fingertip = 0.6
-                # grasp.grasp_params.grasp_params_frame_name = frame_helpers.VISION_FRAME_NAME
-
-                # manip_request = manipulation_api_pb2.ManipulationApiRequest(
-                #     pick_object_in_image=grasp
-                # )
-
-                # # --- 將 SDK 夾取指令轉換並傳送給 ROS 2 ---
-                # self.send_ros2_manipulation_goal(manip_request)
-
-                # target["status"] = STATUS_GRASPING
-                self.get_logger().info("已抵達目標範圍，開始夾取程序...")
-
-                # 取得目標在 vision frame 下的 3D 座標
-                vision_tform_obj = target["vision_tform_obj"]
-
-                # 構造 SDK 夾取指令：改用 PickObject
-                grasp = manipulation_api_pb2.PickObject(
-                    frame_name=frame_helpers.VISION_FRAME_NAME,
-                    object_rt_frame=geometry_pb2.Vec3(
-                        x=float(vision_tform_obj.x),
-                        y=float(vision_tform_obj.y),
-                        z=float(vision_tform_obj.z)
-                    )
+                #影像夾取
+                # 構造 SDK 夾取指令
+                pick_vec = geometry_pb2.Vec2(x=center_px_x, y=center_px_y)
+                grasp = manipulation_api_pb2.PickObjectInImage(
+                    pixel_xy=pick_vec,
+                    transforms_snapshot_for_camera=image_full.shot.transforms_snapshot,
+                    frame_name_image_sensor=image_full.shot.frame_name_image_sensor,
+                    camera_model=image_full.source.pinhole
                 )
-
-                # grasp 參數
                 grasp.grasp_params.grasp_palm_to_fingertip = 0.6
                 grasp.grasp_params.grasp_params_frame_name = frame_helpers.VISION_FRAME_NAME
 
-                # 建立 Manipulation Request
                 manip_request = manipulation_api_pb2.ManipulationApiRequest(
-                    pick_object=grasp
+                    pick_object_in_image=grasp
                 )
 
                 # --- 將 SDK 夾取指令轉換並傳送給 ROS 2 ---
                 self.send_ros2_manipulation_goal(manip_request)
 
                 target["status"] = STATUS_GRASPING
+                
+                self.get_logger().info("已抵達目標範圍，開始夾取程序...")
+                
+                # #座標夾取
+                # # 取得目標在 vision frame 下的 3D 座標
+                # vision_tform_obj = target["vision_tform_obj"]
+
+                # # 構造 SDK 夾取指令：改用 PickObject
+                # grasp = manipulation_api_pb2.PickObject(
+                #     frame_name=frame_helpers.VISION_FRAME_NAME,
+                #     object_rt_frame=geometry_pb2.Vec3(
+                #         x=float(vision_tform_obj.x),
+                #         y=float(vision_tform_obj.y),
+                #         z=float(vision_tform_obj.z)
+                #     )
+                # )
+
+                # # grasp 參數
+                # grasp.grasp_params.grasp_palm_to_fingertip = 0.6
+                # grasp.grasp_params.grasp_params_frame_name = frame_helpers.VISION_FRAME_NAME
+
+                # # 建立 Manipulation Request
+                # manip_request = manipulation_api_pb2.ManipulationApiRequest(
+                #     pick_object=grasp
+                # )
+
+                # # --- 將 SDK 夾取指令轉換並傳送給 ROS 2 ---
+                # self.send_ros2_manipulation_goal(manip_request)
+
+                # target["status"] = STATUS_GRASPING
 
     def send_cmd_async(self, sdk_cmd, label):
         """非同步發送：發完指令就直接回傳，不等待結果"""
