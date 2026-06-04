@@ -32,7 +32,7 @@ from bosdyn.client.directory_registration import DirectoryRegistrationClient
 
 import rclpy
 from rclpy.node import Node
-from sensor_msgs.msg import Image
+from sensor_msgs.msg import Image as ROS2Image
 from cv_bridge import CvBridge
 from vision_msgs.msg import Detection2DArray, Detection2D, ObjectHypothesisWithPose
 
@@ -64,7 +64,7 @@ class SpotYoloBridgeNode(Node):
     def __init__(self):
         super().__init__('spot_yolo_bridge')
         # 建立 Publisher
-        self.image_pub = self.create_publisher(Image, 'yolo/debug_image', 10)
+        self.image_pub = self.create_publisher(ROS2Image, 'yolo/debug_image', 10)
         self.det_pub = self.create_publisher(Detection2DArray, 'yolo/detections', 10)
         self.bridge = CvBridge()
 
@@ -75,13 +75,20 @@ class SpotYoloBridgeNode(Node):
 
         # 2. 發布結構化偵測數據 (供其他 ROS 節點使用)
         det_array = Detection2DArray()
-        # 這裡可以根據 detections 內容填充 Detection2DArray...
         self.det_pub.publish(det_array)
 
 # 全域節點變數，方便 thread 調用
 ros_node = None
 
 def process_thread(args, request_queue):
+    # 確保同目錄下的 image 資料夾存在
+    save_dir = os.path.join(os.getcwd(), 'image')
+    os.makedirs(save_dir, exist_ok=True)
+    
+    # 兩個獨立的計數器
+    request_counter = 0  # 總請求計數器（用來判斷每三張存一張）
+    save_counter = 0     # 實際存檔成功的圖片編號
+
     # Load models
     models = {}
     for model in args.model:
@@ -101,7 +108,7 @@ def process_thread(args, request_queue):
     print('暖機完成，準備接收請求。')
     
     while True:
-        # [關鍵修正 1] 這裡改成接收一個 Tuple: (請求, 專屬的回傳通道)
+        # 接收一個 Tuple: (請求, 專屬的回傳通道)
         request, return_queue = request_queue.get()
 
         try:
@@ -145,7 +152,7 @@ def process_thread(args, request_queue):
                 jpg = np.frombuffer(request.input_data.image.data, dtype=dtype)
                 image = cv2.imdecode(jpg, cv2.IMREAD_COLOR)
 
-            # [關鍵修正 2] 寬高修正：OpenCV Shape 是 (H, W)
+            # 寬高修正：OpenCV Shape 是 (H, W)
             image_height = image.shape[0]
             image_width = image.shape[1]
 
@@ -196,21 +203,37 @@ def process_thread(args, request_queue):
                 if not args.no_debug:
                     pts = np.array([point1, point2, point3, point4], np.int32).reshape((-1, 1, 2))
                     cv2.polylines(image, [pts], True, (0, 255, 0), 2)
-                    cv2.putText(image, f"{label}: {score:.2f}", (int(box[0]), int(box[1]-10)), 
+                    # cv2.putText(image, f"{label}: {score:.2f}", (int(box[0]), int(box[1]-10)), 
+                    #             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                    cv2.putText(image, f"trash: {score:.2f}", (int(box[0]), int(box[1]-10)), 
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
 
-            # if not args.no_debug:
-            #     cv2.imwrite('network_compute_server_output.jpg', image)
+            # --- [修改功能] 每5張影像存一張 ---
+            request_counter += 1
+            if request_counter % 5 == 0:
+                save_counter += 1
+                
+                # 取得當前時間戳記 (格式: YYYYMMDD_HHMMSS)
+                timestamp = time.strftime("%Y%m%d_%H%M%S", time.localtime())
+                
+                # 組合檔名，例如: img_0001_20260531_120906.jpg
+                filename = f"img_{timestamp}_{save_counter:04d}.jpg" 
+                
+                full_path = os.path.join(save_dir, filename)
+                cv2.imwrite(full_path, image)
+                
+            # print(f"[儲存] 已存取第 {request_counter} 次請求之影像 -> {filename}") # 可選：Debug 用
+            #以上存圖片
+                
+
             # if not args.no_debug and ros_node is not None:
-            #     # 透過 ROS2 發布
-            #     # ros_node.publish_results(image, detections, model.category_index)
             #     if num_objects > 0:
-            #         # 只有在辨識到物品時才透過 ROS2 發布影像與數據
-            #         ros_node.publish_results(image, detections, model.category_index)
-            #         # print(f"偵測到 {num_objects} 個目標，已發布至 ROS2。") # 可選：Debug 用
+            #         timestamp = time.strftime("%Y%m%d_%H%M%S", time.localtime())
+            #         filename = f"img_found_{save_counter:04d}_{timestamp}.jpg" 
+            #         full_path = os.path.join(save_dir, filename)
+            #         cv2.imwrite(full_path, image)
+            #         # ros_node.publish_results(image, detections, model.category_index)
             #     else:
-            #         # 如果沒偵測到東西，可以選擇靜默，或是發布空數據
-            #         # 通常為了省頻寬與 RViz 乾淨，我們在這裡什麼都不做
             #         pass
 
             # Put Success Result
@@ -218,13 +241,11 @@ def process_thread(args, request_queue):
 
         except Exception as e:
             print(f"!!! Error in process_thread: {e}")
-            # 即使出錯，也要回傳一個錯誤狀態，不然 Client 會卡死
             if not isinstance(request, network_compute_bridge_pb2.ListAvailableModelsRequest):
                 err_proto = network_compute_bridge_pb2.NetworkComputeResponse()
                 err_proto.status = network_compute_bridge_pb2.NETWORK_COMPUTE_STATUS_EXTERNAL_SERVER_ERROR
                 return_queue.put(err_proto)
             else:
-                # ListAvailableModels 出錯就回傳空的
                 return_queue.put(network_compute_bridge_pb2.ListAvailableModelsResponse())
 
 
@@ -236,11 +257,8 @@ class NetworkComputeBridgeWorkerServicer(
         self.thread_input_queue = thread_input_queue
 
     def NetworkCompute(self, request, context):
-        # [關鍵修正 3] 每個請求創建自己的 Queue
         my_response_queue = queue.Queue()
-        # 把 (請求, 我的Queue) 丟給 worker
         self.thread_input_queue.put((request, my_response_queue))
-        # 只從我的 Queue 等待結果
         out_proto = my_response_queue.get()
         return out_proto
 
@@ -256,22 +274,18 @@ def register_with_robot(options):
 
     sdk = bosdyn.client.create_standard_sdk("yolo_server")
     robot = sdk.create_robot(options.hostname)
-    # 請確保密碼正確
     robot.authenticate("admin", "eqyqp33u8i74")
 
     registration_client = robot.ensure_client(
         bosdyn.client.directory_registration.DirectoryRegistrationClient.default_service_name)
 
-    # --- [新增邏輯]：先檢查並踢掉舊服務 ---
     try:
         print(f'正在檢查並清理舊的 "{options.name}" 服務...')
         registration_client.unregister(options.name)
-        time.sleep(0.5) # 給 Directory 服務一點反應時間
+        time.sleep(0.5) 
     except Exception:
-        # 如果本來就沒這個服務，會報錯，我們直接跳過即可
         pass
 
-    # --- 執行正式註冊 ---
     print(f'正在將 {ip}:{options.port} 註冊為 {options.name}...')
     try:
         registration_client.register(options.name, "bosdyn.api.NetworkComputeBridgeWorker",
@@ -279,12 +293,10 @@ def register_with_robot(options):
         print(f"服務 {options.name} 註冊成功！")
     except Exception as e:
         print(f"註冊失敗: {e}")
-        # 如果還是失敗，可能是 IP 衝突或網路問題，建議直接中斷
         sys.exit(1)
 
 def main(argv):
     FIXED_ROBOT_IP = "10.0.0.3"
-    # FIXED_ROBOT_IP = "192.168.80.3"
     DEFAULT_MODEL = "best.engine"
     DEFAULT_LABELS = "labels.txt"
     SERVICE_NAME = "fetch-server"
@@ -308,34 +320,28 @@ def main(argv):
         print(f"錯誤: 找不到模型文件 {options.model[0][0]}")
         sys.exit(1)
     
-    # 註冊服務
     register_with_robot(options)
 
     request_queue = queue.Queue()
     thread = threading.Thread(target=process_thread, args=([options, request_queue]), daemon=True)
     thread.start()
 
-    # 啟動 gRPC Server
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
     network_compute_bridge_service_pb2_grpc.add_NetworkComputeBridgeWorkerServicer_to_server(
         NetworkComputeBridgeWorkerServicer(request_queue), server)
     
-    # 這裡用 0.0.0.0 確保外部連得進來
     server.add_insecure_port('0.0.0.0:' + options.port)
     server.start()
 
     print(f'YOLO 伺服器運行中 (Port {options.port})...')
     
     try:
-        # 恢復原本的 thread.join()，這對 gRPC 服務器比較友善
-        # thread.join()
         rclpy.spin(ros_node)
     except KeyboardInterrupt:
         print("\n偵測到停止訊號")
     finally:
         try:
             print("\n正在註銷服務...")
-            # 建立臨時清理客戶端
             sdk = bosdyn.client.create_standard_sdk("cleanup")
             robot = sdk.create_robot(options.hostname)
             robot.authenticate("admin", "eqyqp33u8i74")
@@ -346,12 +352,9 @@ def main(argv):
         except Exception as e:
             print(f"註銷失敗: {e}")
             
-        # 關閉 ROS2
         ros_node.destroy_node()
         rclpy.shutdown()
         server.stop(0)
-        
-        # 強制退出，避免殘留進程
         os._exit(0) 
 
     return True

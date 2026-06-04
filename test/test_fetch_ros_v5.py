@@ -141,6 +141,7 @@ class SpotFetchROS2Node(Node):
             pass
     
     def fetch_loop(self):
+        return
         target = self.get_target_by_id(self.current_target_id)
         s = 0        
         if self.has_target_with_status([STATUS_GRASPING, STATUS_POST_GRASP]):
